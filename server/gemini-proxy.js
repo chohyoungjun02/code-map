@@ -13,7 +13,7 @@ export function geminiHandler(apiKey) {
     if (req.url !== '/api/gemini') return next()
     const reply = (status, body) => { res.statusCode = status; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(body)) }
     if (req.method !== 'POST') return reply(405, { error: { message: 'POST only' } })
-    if (!apiKey) return reply(500, { error: { message: '서버에 GEMINI_API_KEY가 설정되지 않았습니다. code-map/.env.local 파일을 확인하세요.' } })
+    if (!apiKey) return reply(500, { error: { message: '서버에 GEMINI_API_KEY가 설정되지 않았습니다. (내 컴퓨터: code-map/.env.local 파일, Vercel: 프로젝트 Settings → Environment Variables)' } })
 
     let raw = ''
     for await (const chunk of req) {
