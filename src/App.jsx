@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ReactFlow, Background, Controls, MiniMap, Handle, Position, MarkerType } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { analyze, layout, readAliases, labelOf, groupOf, CODE_EXT, IGNORED, NODE_W, NODE_H } from './analyze.js'
+import { analyze, layout, readAliases, labelOf, CODE_EXT, IGNORED, NODE_W, NODE_H } from './analyze.js'
 import { compareVersions, lineDiff } from './diff.js'
 import { demoFiles } from './demo.js'
 import { buildFixPrompt, estimateTokens, neighbors, wholeProjectTokens } from './prompt.js'
@@ -13,7 +13,7 @@ function FileNode({ data }) {
   const n = data.file
   const cls = ['fnode', n.entry && 'entry', n.unused && 'unused', n.inCycle && 'cycle', data.diff, data.selected && 'selected', data.dim && 'dim']
   return (
-    <div className={cls.filter(Boolean).join(' ')}>
+    <div className={cls.filter(Boolean).join(' ')} title={data.role && `🤖 ${data.role}`}>
       <Handle type="target" position={Position.Left} />
       {n.risks.length > 0 && <span className="risk-badge" title={n.risks.map((r) => r.text).join('\n')}>⚠ {n.risks.length}</span>}
       {DIFF_TAG[data.diff] && <span className={'diff-badge ' + data.diff}>{DIFF_TAG[data.diff]}</span>}
@@ -27,7 +27,7 @@ function CompNode({ data }) {
   const c = data.comp
   const cls = ['fnode', 'comp', !c.renderedBy.length && 'entry', data.diff, data.selected && 'selected', data.dim && 'dim']
   return (
-    <div className={cls.filter(Boolean).join(' ')}>
+    <div className={cls.filter(Boolean).join(' ')} title={data.role && `🤖 ${data.role}`}>
       <Handle type="target" position={Position.Left} />
       {DIFF_TAG[data.diff] && <span className={'diff-badge ' + data.diff}>파일 {DIFF_TAG[data.diff]}</span>}
       <b>&lt;{c.name} /&gt;</b>
@@ -75,11 +75,10 @@ export default function App() {
   const [grouped, setGrouped] = useState(true)
   const [loading, setLoading] = useState(null)
   const [view, setView] = useState('files') // 'files' = import graph, 'tree' = React component tree
-  const [roles, setRoles] = useState(null) // { folder: { role, feedback? } } from AI
+  const [roles, setRoles] = useState(null) // { folder: role } from AI
+  const [fileRoles, setFileRoles] = useState(null) // { file: role } from AI
   const [summary, setSummary] = useState(null) // one-line change summary from AI
   const [aiBusy, setAiBusy] = useState(null)
-  const [dreamer, setDreamer] = useState(false) // 꿈나무 모드: guess folder roles before the AI answer is shown
-  const [guesses, setGuesses] = useState({}) // { folder: text }
   const focus = selected ?? hovered
   const files = project?.files
 
@@ -92,9 +91,7 @@ export default function App() {
   // Clear the loading message only after the new graph has been analysed and drawn.
   useEffect(() => setLoading(null), [lay, diff])
   // AI answers belong to the version they were asked about.
-  useEffect(() => { setRoles(null); setGuesses({}) }, [project])
-  const folderNames = useMemo(() => graph ? [...new Set(Object.keys(graph.nodes).map(groupOf))].sort() : [], [graph])
-  const guessCount = folderNames.filter((f) => guesses[f]?.trim()).length
+  useEffect(() => { setRoles(null); setFileRoles(null) }, [project])
   useEffect(() => setSummary(null), [diff])
   const isolatedCount = g ? Object.values(g.nodes).filter((n) => n.isolated).length : 0
 
@@ -102,10 +99,11 @@ export default function App() {
   function pickFile(id) { showView('files'); setSelected(id) }
 
   async function runAi(kind) {
-    setAiBusy(kind === 'roles' ? (dreamer ? '내 추측에 대한 피드백을 받는 중…' : '폴더 역할을 물어보는 중…') : '변경 내용을 요약하는 중…')
+    setAiBusy({ roles: '폴더 역할을 물어보는 중…', files: '파일 역할을 물어보는 중… (파일이 많으면 조금 걸려요)' }[kind] ?? '변경 내용을 요약하는 중…')
     try {
       const ai = await import('./ai.js')
-      if (kind === 'roles') setRoles(await ai.folderRoles(files, graph, dreamer ? guesses : {}))
+      if (kind === 'roles') setRoles(await ai.folderRoles(files, graph))
+      else if (kind === 'files') setFileRoles(await ai.fileRoles(files, graph))
       else setSummary(await ai.changeSummary(base.files, files, diff))
     } catch (err) {
       alert('AI 요청 실패: ' + err.message)
@@ -151,21 +149,21 @@ export default function App() {
       const d = diff?.status[tree ? n.file : n.id]
       // In compare mode, untouched files fade so the changes stand out.
       const dim = related ? !related.has(n.id) : d === 'same'
-      const data = { [tree ? 'comp' : 'file']: n, diff: d, selected: n.id === selected, dim }
+      const data = { [tree ? 'comp' : 'file']: n, diff: d, selected: n.id === selected, dim, role: fileRoles?.[tree ? n.file : n.id] }
       // Sizes are given up front: these objects are rebuilt on every hover, and React Flow forgets measured sizes
       // of rebuilt nodes, which emptied the minimap and broke off-screen culling.
       return { id: n.id, type: tree ? 'comp' : 'file', position: lay.pos[n.id], initialWidth: NODE_W, initialHeight: NODE_H, data }
     })
     lay.groups.forEach((gr) => list.unshift({
       id: gr.id, type: 'folder', position: { x: gr.x, y: gr.y }, initialWidth: gr.w, initialHeight: gr.h, zIndex: -1, selectable: false, draggable: false,
-      data: { name: gr.name, count: gr.count, w: gr.w, h: gr.h, role: roles?.[gr.name]?.role },
+      data: { name: gr.name, count: gr.count, w: gr.w, h: gr.h, role: roles?.[gr.name] },
     }))
     if (isolatedCount) list.push({
       id: '__isolated', type: 'label', position: { x: 0, y: lay.isolatedTop - 44 }, initialWidth: 600, initialHeight: 30, selectable: false, draggable: false,
       data: { text: tree ? `다른 컴포넌트를 그리지도, 그려지지도 않는 컴포넌트 (${isolatedCount}개)` : `다른 파일과 import 관계가 없는 파일 (${isolatedCount}개)` },
     })
     return list
-  }, [g, graph, lay, selected, related, isolatedCount, diff, roles])
+  }, [g, graph, lay, selected, related, isolatedCount, diff, roles, fileRoles])
   // Panning stops a margin past the graph's edges, so a fast drag can't throw the whole graph off screen.
   const extent = useMemo(() => {
     if (!nodes.length) return undefined
@@ -263,7 +261,6 @@ export default function App() {
           </span>
         )}
         <label><input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} /> 폴더별 묶기</label>
-        <label title="AI 설명을 보기 전에 폴더 역할을 먼저 추측해 보고 피드백을 받는 학습 모드"><input type="checkbox" checked={dreamer} onChange={(e) => { setDreamer(e.target.checked); setRoles(null) }} /> 🌱 꿈나무 모드</label>
         {graph && <span>파일 {all.length} · ⚠ 위험 파일 {risky.length}</span>}
         <div className="legend">
           <span><i className="dot" style={{ borderColor: 'var(--entry)' }} />진입점</span>
@@ -285,14 +282,13 @@ export default function App() {
         {!graph ? (
           <div className="empty">
             <p>JS/TS(React), Python, Java 프로젝트 폴더를 선택하면 파일 간 import 관계를 그래프로 보여줍니다.</p>
-            <p>🌱 처음 공부한다면 <b>꿈나무 모드</b>를 켜 보세요. 폴더 역할을 먼저 추측해 보고 AI의 설명, 피드백과 비교할 수 있습니다.</p>
             <p>코드는 서버로 전송되지 않고 브라우저 안에서만 분석됩니다. (AI 설명 버튼을 직접 누를 때만 Google Gemini로 보냅니다.)</p>
           </div>
         ) : (
           <>
             <div className="graph">
               {/* While panning/zooming, boxes slide under the cursor; a hover there would redraw the whole graph every frame. */}
-              <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView minZoom={0.1} onlyRenderVisibleElements translateExtent={extent}
+              <ReactFlow colorMode="dark" nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView minZoom={0.1} onlyRenderVisibleElements translateExtent={extent}
                 onMoveStart={() => { moving.current = true; setHovered(null) }} onMoveEnd={() => { moving.current = false }}
                 onNodeClick={(_, n) => g.nodes[n.id] && setSelected(n.id)}
                 onNodeMouseEnter={(_, n) => !moving.current && g.nodes[n.id] && setHovered(n.id)} onNodeMouseLeave={() => setHovered(null)} onPaneClick={() => setSelected(null)}
@@ -321,35 +317,21 @@ export default function App() {
                     <h2>🤖 AI 설명</h2>
                     <p className="note">버튼을 누르면 파일 내용(파일이 많으면 각 파일 앞부분만, 변경 요약은 바뀐 줄)이 Google Gemini로 전송됩니다. 누르기 전에는 아무것도 보내지 않습니다.</p>
                     <p className="note">⚠ 무료 AI라서 보낸 코드가 Google의 서비스 개선에 사용될 수 있습니다. 회사 코드처럼 민감한 코드에는 쓰지 마세요.</p>
-                    {dreamer ? (
-                      <div className="dreamer">
-                        <h3>🌱 먼저 추측해 보기</h3>
-                        <p className="note">AI 답을 보기 전에, 그래프의 파일 이름과 화살표(누가 누구를 import 하는지)를 보고 폴더마다 무슨 일을 하는지 적어 보세요. 파일을 클릭하면 코드도 볼 수 있어요.</p>
-                        {folderNames.map((f) => (
-                          <label key={f} className="guess">
-                            <b>📁 {f}</b>
-                            <input value={guesses[f] ?? ''} placeholder="예: 화면에 보이는 버튼들을 모아 둔 곳" disabled={!!roles}
-                              onChange={(e) => setGuesses((g) => ({ ...g, [f]: e.target.value }))} />
-                          </label>
-                        ))}
-                        {roles
-                          ? <button className="btn" onClick={() => setRoles(null)}>다시 추측하기</button>
-                          : <button className="btn primary" disabled={!!aiBusy || !guessCount} onClick={() => runAi('roles')}>AI 설명과 비교하기 ({guessCount}/{folderNames.length})</button>}
-                      </div>
-                    ) : <button className="btn" disabled={!!aiBusy} onClick={() => runAi('roles')}>폴더 역할 설명받기</button>}
+                    <button className="btn" disabled={!!aiBusy} onClick={() => runAi('roles')}>폴더 역할 설명받기</button>
+                    <button className="btn" disabled={!!aiBusy} onClick={() => runAi('files')}>파일 역할 설명받기</button>
                     {diff && <button className="btn" disabled={!!aiBusy} onClick={() => runAi('summary')}>변경 내용 한 줄 요약</button>}
                     {aiBusy && <p role="status"><span className="spinner small" /> {aiBusy}</p>}
-                    {roles && <ul className="roles">{Object.entries(roles).map(([f, r]) => (
-                      <li key={f}>
-                        <b>📁 {f}</b> — {r.role}
-                        {guesses[f]?.trim() && dreamer && (
-                          <div className="grade">
-                            <span>내 추측: {guesses[f]}</span>
-                            {r.feedback && <p>{r.feedback}</p>}
-                          </div>
-                        )}
-                      </li>
-                    ))}</ul>}
+                    {roles && <ul className="roles">{Object.entries(roles).map(([f, r]) => <li key={f}><b>📁 {f}</b> — {r}</li>)}</ul>}
+                    {fileRoles && (
+                      <>
+                        <h3>파일 역할 <small className="note">(그래프 상자에 마우스를 올려도 보여요)</small></h3>
+                        <ul className="roles files">{Object.entries(fileRoles).sort().map(([f, r]) => (
+                          <li key={f}><button onClick={() => pickFile(f)}>{f}</button> — {r}</li>
+                        ))}</ul>
+                        {Object.keys(fileRoles).length < Object.keys(files).length &&
+                          <p className="note">⚠ AI가 {Object.keys(files).length - Object.keys(fileRoles).length}개 파일의 설명을 빠뜨렸습니다. 다시 눌러 보세요.</p>}
+                      </>
+                    )}
                   </section>
                   {diff && (
                     <section className="diff-summary">
@@ -382,6 +364,7 @@ export default function App() {
                   {sel.entry && <span className="tag" style={{ background: 'var(--entry)' }}>진입점</span>}
                   {DIFF_TAG[diff?.status[sel.id]] && <span className="tag" style={{ background: `var(--${diff.status[sel.id]})` }}>{DIFF_TAG[diff.status[sel.id]]}</span>}
                   <span>{sel.lines}줄 · 의존하는 파일 {sel.impact}개</span>
+                  {fileRoles?.[sel.id] && <p className="summary">🤖 {fileRoles[sel.id]}</p>}
                   {sel.risks.length > 0 && <><h3>⚠ 위험</h3><ul className="risks">{sel.risks.map((r) => <li key={r.kind}>{r.text}</li>)}</ul></>}
                   <FixPrompt key={sel.id} files={files} graph={graph} id={sel.id} />
                   <h3>export</h3>

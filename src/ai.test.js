@@ -3,14 +3,18 @@ import assert from 'node:assert'
 import { Readable } from 'node:stream'
 import { analyze } from './analyze.js'
 import { compareVersions } from './diff.js'
-import { changeSummary, folderRoles } from './ai.js'
+import { changeSummary, fileRoles, folderRoles, RETRY_MS } from './ai.js'
 import { geminiHandler } from '../server/gemini-proxy.js'
 
 // Fake Google: answers like the Interactions API.
-let toGoogle, googleStatus = 200
+let toGoogle, googleStatus = 200, busyOnce = false
 const google = async (url, init) => {
   toGoogle = { url, headers: init.headers, body: JSON.parse(init.body) }
-  const answer = toGoogle.body.response_format.schema.required[0] === 'folders' ? '{"folders":[{"folder":"(루트)","role":"앱 전체"}]}' : '{"summary":"b 기능 추가"}'
+  if (busyOnce) { busyOnce = false; return new Response(JSON.stringify({ error: { code: 503, message: "high demand" } }), { status: 503 }) }
+  const answer = {
+    folders: '{"folders":[{"folder":"(루트)","role":"앱 전체"}]}',
+    files: '{"files":[{"file":"a.js","role":"상수 a"},{"file":"made-up.js","role":"없는 파일"}]}',
+  }[toGoogle.body.response_format.schema.required[0]] ?? '{"summary":"b 기능 추가"}'
   const body = googleStatus === 200
     ? { id: 'i', status: 'completed', steps: [{ type: 'thought', summary: [] }, { type: 'model_output', content: [{ type: 'text', text: answer }] }] }
     : { error: { code: googleStatus, message: 'API key not valid. Please pass a valid API key.' } }
@@ -37,13 +41,11 @@ assert.equal(toGoogle.headers['x-goog-api-key'], 'server-key') // key added on t
 assert.equal(toGoogle.body.model, 'gemini-3.5-flash-lite')
 assert.ok(!JSON.stringify(toGoogle.body).includes('additionalProperties'))
 assert.ok(toGoogle.body.input.includes('+ export const a = 2') && toGoogle.body.input.includes('새 파일 b.js'))
-assert.deepEqual(await folderRoles(newF, analyze(newF)), { '(루트)': { role: '앱 전체' } })
-assert.ok(!('feedback' in toGoogle.body.response_format.schema.properties.folders.items.properties))
-// 꿈나무 모드: the guess goes into the prompt and the schema asks for feedback.
-await folderRoles(newF, analyze(newF), { '(루트)': '숫자 상수 모음', other: '  ' })
-assert.ok(toGoogle.body.input.includes('- (루트): 숫자 상수 모음') && !toGoogle.body.input.includes('- other'))
-assert.ok('feedback' in toGoogle.body.response_format.schema.properties.folders.items.properties)
+assert.deepEqual(await folderRoles(newF, analyze(newF)), { '(루트)': '앱 전체' })
+assert.deepEqual(await fileRoles(newF, analyze(newF)), { 'a.js': '상수 a' }) // made-up path dropped
+assert.ok(toGoogle.body.input.includes('--- b.js'))
 
+// One 503 "high demand" is retried automatically.RETRY_MS.value = 1; busyOnce = trueassert.deepEqual(await fileRoles(newF, analyze(newF)), { 'a.js': '상수 a' })
 googleStatus = 400
 await assert.rejects(changeSummary(oldF, newF, d), /Gemini API 키가 올바르지 않습니다/)
 googleStatus = 429
