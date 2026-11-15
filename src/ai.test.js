@@ -45,7 +45,10 @@ assert.deepEqual(await folderRoles(newF, analyze(newF)), { '(루트)': '앱 전�
 assert.deepEqual(await fileRoles(newF, analyze(newF)), { 'a.js': '상수 a' }) // made-up path dropped
 assert.ok(toGoogle.body.input.includes('--- b.js'))
 
-// One 503 "high demand" is retried automatically.RETRY_MS.value = 1; busyOnce = trueassert.deepEqual(await fileRoles(newF, analyze(newF)), { 'a.js': '상수 a' })
+// One 503 "high demand" is retried automatically.
+RETRY_MS.value = 1; busyOnce = true
+assert.deepEqual(await fileRoles(newF, analyze(newF)), { 'a.js': '상수 a' })
+assert.equal(busyOnce, false) // the 503 really was served, then retried
 googleStatus = 400
 await assert.rejects(changeSummary(oldF, newF, d), /Gemini API 키가 올바르지 않습니다/)
 googleStatus = 429

@@ -4,7 +4,7 @@ import '@xyflow/react/dist/style.css'
 import { analyze, layout, readAliases, labelOf, CODE_EXT, IGNORED, NODE_W, NODE_H } from './analyze.js'
 import { compareVersions, lineDiff } from './diff.js'
 import { demoFiles } from './demo.js'
-import { buildFixPrompt, estimateTokens, neighbors, wholeProjectTokens } from './prompt.js'
+import { buildFixPrompt, estimateTokens, findFilesInError, neighbors, wholeProjectTokens } from './prompt.js'
 
 const RISK_TAG = { cycle: '순환', impact: '영향 큼', big: '큰 파일', unused: '사용 안 됨', exports: '안 쓰는 export' }
 const DIFF_TAG = { added: '새 파일', changed: '변경됨' }
@@ -77,6 +77,8 @@ export default function App() {
   const [view, setView] = useState('files') // 'files' = import graph, 'tree' = React component tree
   const [roles, setRoles] = useState(null) // { folder: role } from AI
   const [fileRoles, setFileRoles] = useState(null) // { file: role } from AI
+  const [bugText, setBugText] = useState('') // pasted error message / stack trace
+  const [bug, setBug] = useState(null) // { text, found: [file ids, top frame first] }
   const [summary, setSummary] = useState(null) // one-line change summary from AI
   const [aiBusy, setAiBusy] = useState(null)
   const focus = selected ?? hovered
@@ -91,7 +93,7 @@ export default function App() {
   // Clear the loading message only after the new graph has been analysed and drawn.
   useEffect(() => setLoading(null), [lay, diff])
   // AI answers belong to the version they were asked about.
-  useEffect(() => { setRoles(null); setFileRoles(null) }, [project])
+  useEffect(() => { setRoles(null); setFileRoles(null); setBug(null) }, [project])
   useEffect(() => setSummary(null), [diff])
   const isolatedCount = g ? Object.values(g.nodes).filter((n) => n.isolated).length : 0
 
@@ -149,7 +151,8 @@ export default function App() {
       const d = diff?.status[tree ? n.file : n.id]
       // In compare mode, untouched files fade so the changes stand out.
       const dim = related ? !related.has(n.id) : d === 'same'
-      const data = { [tree ? 'comp' : 'file']: n, diff: d, selected: n.id === selected, dim, role: fileRoles?.[tree ? n.file : n.id] }
+      // A clicked file and every file it is directly linked to get the same highlight (related is built around the selection).
+      const data = { [tree ? 'comp' : 'file']: n, diff: d, selected: !!selected && !!related?.has(n.id), dim, role: fileRoles?.[tree ? n.file : n.id] }
       // Sizes are given up front: these objects are rebuilt on every hover, and React Flow forgets measured sizes
       // of rebuilt nodes, which emptied the minimap and broke off-screen culling.
       return { id: n.id, type: tree ? 'comp' : 'file', position: lay.pos[n.id], initialWidth: NODE_W, initialHeight: NODE_H, data }
@@ -313,6 +316,20 @@ export default function App() {
                 </>
               ) : !sel ? (
                 <>
+                  <section className="bug">
+                    <h2>🐞 오류로 파일 찾기</h2>
+                    <textarea rows={4} value={bugText} onChange={(e) => setBugText(e.target.value)}
+                      placeholder={'오류 메시지나 스택 트레이스를 통째로 붙여 넣으세요.\n예: TypeError: ... at run (http://localhost:5173/src/App.jsx:42:7)'} />
+                    <button className="btn primary" disabled={!bugText.trim()} onClick={() => setBug({ text: bugText.trim(), found: findFilesInError(bugText, Object.keys(files)) })}>관련 파일 찾기</button>
+                    {bug && (bug.found.length ? (
+                      <>
+                        <p className="note">오류에 나온 파일 {bug.found.length}개 (위에 있을수록 오류가 난 곳에 가까워요). 누르면 이 오류가 적힌 수정 요청 프롬프트가 열립니다.</p>
+                        <ol className="bug-files">{bug.found.map((f, i) => (
+                          <li key={f}><button onClick={() => pickFile(f)}>{f}</button>{i === 0 && <span className="tag" style={{ background: 'var(--cycle)' }}>가장 유력</span>}</li>
+                        ))}</ol>
+                      </>
+                    ) : <p className="note">오류 메시지에서 이 프로젝트의 파일 경로를 찾지 못했어요. 파일 이름과 줄 번호가 나오는 스택 트레이스 전체를 붙여 넣어 보세요.</p>)}
+                  </section>
                   <section className="ai">
                     <h2>🤖 AI 설명</h2>
                     <p className="note">버튼을 누르면 파일 내용(파일이 많으면 각 파일 앞부분만, 변경 요약은 바뀐 줄)이 Google Gemini로 전송됩니다. 누르기 전에는 아무것도 보내지 않습니다.</p>
@@ -366,7 +383,7 @@ export default function App() {
                   <span>{sel.lines}줄 · 의존하는 파일 {sel.impact}개</span>
                   {fileRoles?.[sel.id] && <p className="summary">🤖 {fileRoles[sel.id]}</p>}
                   {sel.risks.length > 0 && <><h3>⚠ 위험</h3><ul className="risks">{sel.risks.map((r) => <li key={r.kind}>{r.text}</li>)}</ul></>}
-                  <FixPrompt key={sel.id} files={files} graph={graph} id={sel.id} />
+                  <FixPrompt key={sel.id} files={files} graph={graph} id={sel.id} bug={bug?.found.includes(sel.id) ? bug : null} />
                   <h3>export</h3>
                   <p>{sel.exports.join(', ') || '없음'}</p>
                   <h3>이 파일을 import 하는 곳 (수정하면 영향받음)</h3>
@@ -401,11 +418,14 @@ function DiffView({ a, b }) {
 }
 
 // "AI에게 수정 요청하기": a prompt with only this file and the files next to it, plus how many tokens that saves.
-function FixPrompt({ files, graph, id }) {
+// bug ({ text, found }): opened from "오류로 파일 찾기", so the error is filled in and the other files it names are ticked.
+function FixPrompt({ files, graph, id, bug }) {
   const { uses, usedBy } = useMemo(() => neighbors(graph, id), [graph, id])
-  const [open, setOpen] = useState(false)
-  const [problem, setProblem] = useState('')
-  const [include, setInclude] = useState(() => new Set(uses)) // what this file uses is usually needed to fix it
+  const fromError = (bug?.found ?? []).filter((f) => f !== id && !uses.includes(f) && !usedBy.includes(f))
+  const [open, setOpen] = useState(!!bug)
+  const [problem, setProblem] = useState(bug?.text ?? '')
+  // What this file uses is usually needed to fix it; so are the other files the stack trace passes through.
+  const [include, setInclude] = useState(() => new Set([...uses, ...(bug?.found ?? []).filter((f) => f !== id)]))
   const [copied, setCopied] = useState(false)
   const whole = useMemo(() => wholeProjectTokens(files), [files])
   const prompt = useMemo(() => open && buildFixPrompt({ files, graph, id, include: [...include], problem }), [open, files, graph, id, include, problem])
@@ -433,6 +453,7 @@ function FixPrompt({ files, graph, id }) {
       <p className="note">함께 보낼 파일을 고르세요. 이 파일({id})은 항상 들어갑니다.</p>
       {pick('이 파일이 import 하는 파일', uses)}
       {pick('이 파일을 import 하는 파일 (수정하면 영향받음)', usedBy)}
+      {pick('오류 메시지에 나온 다른 파일', fromError)}
       <p className="tokens">전체 코드를 보내면 약 <b>{whole.toLocaleString()}</b> 토큰 → 이 프롬프트는 약 <b>{tokens.toLocaleString()}</b> 토큰
         {whole > tokens && <> (<b>{Math.round((1 - tokens / whole) * 100)}%</b> 절약)</>}</p>
       <button className="btn primary" onClick={copy}>{copied ? '✅ 복사됨' : '프롬프트 복사'}</button>

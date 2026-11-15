@@ -1,7 +1,7 @@
 // Run: node src/prompt.test.js
 import assert from 'node:assert'
 import { analyze } from './analyze.js'
-import { buildFixPrompt, estimateTokens, neighbors, wholeProjectTokens } from './prompt.js'
+import { buildFixPrompt, estimateTokens, findFilesInError, neighbors, wholeProjectTokens } from './prompt.js'
 
 const files = {
   'src/main.js': "import { run } from './app.js'\nrun()",
@@ -24,4 +24,15 @@ assert.ok(buildFixPrompt({ files, graph, id: 'src/math.js', include: [], problem
 assert.equal(estimateTokens('abcd'), 1)
 assert.equal(estimateTokens('오류'), 2)
 assert.ok(wholeProjectTokens(files) > estimateTokens(p))
+
+{ // findFilesInError: stack traces from the browser, Windows, Python and Java
+  const ids = ['src/App.jsx', 'src/data.js', 'src/a.js', 'src/lib/a.js', 'app/models.py', 'src/main/java/com/shop/OrderController.java', 'src/index.js', 'src/ui/index.js']
+  const browser = 'TypeError: x is undefined\n    at run (http://localhost:5173/src/lib/a.js?t=17:4:2)\n    at http://localhost:5173/src/App.jsx:42:7'
+  assert.deepEqual(findFilesInError(browser, ids), ['src/lib/a.js', 'src/App.jsx']) // top frame first
+  assert.deepEqual(findFilesInError('at C:\\proj\\src\\data.js:3', ids), ['src/data.js']) // Windows path, and not src/a.js
+  assert.deepEqual(findFilesInError('File "/home/me/proj/app/models.py", line 3, in get', ids), ['app/models.py'])
+  assert.deepEqual(findFilesInError('at com.shop.OrderController.get(OrderController.java:42)', ids), ['src/main/java/com/shop/OrderController.java'])
+  assert.deepEqual(findFilesInError('at index.js:3', ids), []) // two index.js files: too ambiguous by name alone
+  assert.deepEqual(findFilesInError('no paths here', ids), [])
+}
 console.log('ok prompt')

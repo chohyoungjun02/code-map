@@ -8,6 +8,29 @@ export function estimateTokens(text) {
   return Math.ceil(ascii / 4) + (text.length - ascii)
 }
 
+/**
+ * Project files mentioned in an error message or stack trace, in the order they first appear (the top frame first).
+ * Full paths win (".../src/App.jsx?t=1:4:2", "C:\\p\\app\\models.py"); a bare file name ("OrderController.java:42")
+ * counts only when exactly one project file has that name.
+ */
+export function findFilesInError(text, ids) {
+  const t = text.replace(/\\/g, '/')
+  const pos = (needle) => {
+    // the match must start at a path boundary, so "src/a.js" does not hit "src/data.js"
+    for (let i = t.indexOf(needle); i !== -1; i = t.indexOf(needle, i + 1)) if (i === 0 || /[\s/"'(:@]/.test(t[i - 1])) return i
+    return -1
+  }
+  const byName = {}
+  for (const id of ids) (byName[id.split('/').pop()] ??= []).push(id)
+  const hits = []
+  for (const id of ids) {
+    let at = pos(id)
+    if (at === -1 && byName[id.split('/').pop()].length === 1) at = pos(id.split('/').pop())
+    if (at !== -1) hits.push([at, id])
+  }
+  return hits.sort((a, b) => a[0] - b[0]).map(([, id]) => id)
+}
+
 /** Files worth sending with `id`: the file, what it imports, and who imports it. */
 export function neighbors(graph, id) {
   return {
