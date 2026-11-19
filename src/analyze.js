@@ -95,7 +95,12 @@ function scanPython(code, path) {
   for (const [, list] of code.matchAll(/^[ \t]*import[ \t]+([^\n#]+)/gm)) {
     for (const mod of list.split(',').map((s) => s.trim().split(/\s+/)[0]).filter(Boolean)) imports.push({ src: mod, names: ['*'], bases: [mod.replace(/\./g, '/')], rel: false })
   }
-  for (const [, a, b] of code.matchAll(/^(?:async[ \t]+)?(?:def|class)[ \t]+(\w+)|^([A-Za-z]\w*)[ \t]*(?::[^=\n]+)?=[^=]/gm)) if (!(a ?? b).startsWith('_')) exports.push(a ?? b)
+  // A decorated def/class (`@bp.route(...)`, `@app.get`, `@pytest.fixture`) is used by the framework, not imported, so it is not an export.
+  // shortcut: any decorator counts, so an unused `@lru_cache` helper is not flagged either; list framework decorators if that matters.
+  for (const m of code.matchAll(/^(?:async[ \t]+)?(?:def|class)[ \t]+(\w+)|^([A-Za-z]\w*)[ \t]*(?::[^=\n]+)?=[^=]/gm)) {
+    const name = m[1] ?? m[2]
+    if (!name.startsWith('_') && !(m[1] && /(^|\n)@[^\n]*\n$/.test(code.slice(0, m.index)))) exports.push(name)
+  }
   return { imports, exports, jsx: false, components: [], locals: {}, entry: /^if[ \t]+__name__[ \t]*==/m.test(code) }
 }
 

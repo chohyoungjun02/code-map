@@ -101,7 +101,7 @@ console.log('ok')
     'src/app/services/__init__.py': "",
     'src/app/services/user_service.py': "from . import helpers\nimport app.models as m\ndef get(): pass",
     'src/app/services/helpers.py': "def h(): pass",
-    'src/app/util.py': "def slug(): pass",
+    'src/app/util.py': "def slug(): pass\n@bp.route('/a')\n@login_required\ndef page(): pass",
     'tests/test_user.py': "from app.models import User",
     'scripts/lonely.py': "print(1)",
   })
@@ -113,6 +113,7 @@ console.log('ok')
   assert.deepEqual(n['src/app/services/helpers.py'].importedBy, ['src/app/services/user_service.py'])
   assert.deepEqual(n['src/app/util.py'].importedBy, ['src/app/models.py'])
   assert.deepEqual(n['src/app/models.py'].exports, ['User', 'Post'])
+  assert.deepEqual(n['src/app/util.py'].exports, ['slug']) // decorated route is not an export
   assert.equal(n['tests/test_user.py'].entry, true)
   assert.equal(n['scripts/lonely.py'].isolated, true)
   console.log('ok python')
